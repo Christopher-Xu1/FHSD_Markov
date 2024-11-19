@@ -1,4 +1,4 @@
-from sim_stats import collect_and_compute_statistics
+from sim_statspypy import collect_and_compute_statistics
 from display import print_transition_table
 from plotting import plot_mean_cell_states, plot_final_distribution
 from parameters import states
