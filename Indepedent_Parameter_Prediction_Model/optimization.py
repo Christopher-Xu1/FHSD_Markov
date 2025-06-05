@@ -18,7 +18,7 @@ def SSR_Score(predicted_distribution, observed_distribution):
     score = sum((predicted_distribution[state] - observed_distribution[state]) ** 2 for state in predicted_distribution)
     return score
 
-def bayesian_optimization(transition_probabilities, iterations=1000):
+def Monte-Carlo_RS(transition_probabilities, iterations=1000):
     """Optimize the transition probabilities using Bayesian Optimization.
 
     Args:

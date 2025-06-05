@@ -16,22 +16,27 @@ def create_transition_matrix(Δ, Dr, VD, d0, VT, TD):
     }
     return transition_probabilities_hourly
 
-# Normalize non-zero probabilities
-def normalize_probabilities(transition_probabilities):
-    for key in transition_probabilities:
-        total = transition_probabilities[key].sum()
-        if total > 0:
-            transition_probabilities[key] /= total  # Ensuring probabilities sum to 1
+
+def normalize_probabilities(T):
+    for key, row in T.items():
+        # clip negatives to zero
+        row = np.clip(row, 0.0, None)
+
+        s = row.sum()
+        if s == 0 or not np.isfinite(s):
+            # leave the row as-is; the caller should decide what to do
+            T[key] = row
         else:
-            transition_probabilities[key] = np.zeros_like(transition_probabilities[key])
-    return transition_probabilities
+            T[key] = row / s
+    return T
+
 
 # Function to check for invalid probabilities
 def check_valid_probabilities(transition_probabilities):
     for state, probs in transition_probabilities.items():
         if not np.all(np.isfinite(probs)) or np.any(probs < 0) or np.any(probs > 1):
             return False
-    return True
+    return True 
 
 # Function to simulate Markov model over time
 def simulate_markov_model(transition_probabilities, initial_state_distribution, time_steps):
@@ -61,74 +66,72 @@ def NLL_Score(predicted_distribution, observed_distribution):
         nll -= observed_count * np.log(predicted_count)
     return nll
 
-# Bayesian Optimization with NLL tracking
-def bayesian_optimization(transition_probabilities_func, initial_state_distribution, observed_distribution, iterations=10000):
-    best_params = None
-    best_score = float('inf')
-    nll_scores = []
+from skopt import gp_minimize
+from skopt.space import Real
 
-    for i in range(iterations):
-        # Sample parameters randomly within some range
-        Δ = np.random.uniform(0.001, 0.1)
-        Dr = np.random.uniform(0.01, 0.1)
-        VD = np.random.uniform(0.001, 0.01)
-        d0 = np.random.uniform(0.1, 1.0)
-        VT = np.random.uniform(1.0, 10.0)
-        TD = np.random.uniform(0.01, 0.1)
-        
-        # Generate transition probabilities from sampled parameters
-        transition_probabilities = transition_probabilities_func(Δ, Dr, VD, d0, VT, TD)
-        transition_probabilities = normalize_probabilities(transition_probabilities)
-        
-        # Check if the transition probabilities are valid
-        if not check_valid_probabilities(transition_probabilities):
-            continue  # Skip this iteration if invalid probabilities are found
 
-        # Simulate the model
-        simulation_history = simulate_markov_model(transition_probabilities, initial_state_distribution, 72)  # 72 hours = 3 days
-        final_distribution = simulation_history[-1]
-    
-        # Calculate NLL score
-        score = NLL_Score(final_distribution, observed_distribution)
-        nll_scores.append(score)
+# ─── helper: convert counts → frequencies so totals don’t distort the loss
+def to_freq(count_dict):
+    tot = sum(count_dict.values())
+    return {k: v / tot for k, v in count_dict.items()}
 
-        if score < best_score:
-            best_score = score
-            best_params = (Δ, Dr, VD, d0, VT, TD)
+# ─── objective that gp_minimize will minimise ─────────────────
+def objective(vec):
+    Δ, Dr, VD, d0, VT, TD = vec
 
-        # Optional: print progress every 1000 iterations
-        if (i + 1) % 1000 == 0:
-            print(f"Iteration {i + 1}/{iterations}, Best NLL: {best_score}")
-        
+    P = create_transition_matrix(Δ, Dr, VD, d0, VT, TD)
+    P = normalize_probabilities(P)          # keep if you still want the safeguard
 
-    # Plot the NLL scores over iterations
-    plt.figure(figsize=(10, 6))
-    plt.plot(range(len(nll_scores)), nll_scores, label='NLL Score')
-    plt.xlabel('Iteration')
-    plt.ylabel('Negative Log-Likelihood (NLL)')
-    plt.title('NLL Score Over Iterations')
-    plt.grid(True)
-    plt.show()
+    hist = simulate_markov_model(P, initial_state_distribution, 72)
+    sim_final_freq = to_freq(hist[-1])
+    obs_final_freq = to_freq(observed_state_distribution_3days)
 
-    return best_params
+    # NLL on frequencies – you can swap for SSR if you prefer
+    nll = -sum(
+        observed_state_distribution_3days[s] * np.log(sim_final_freq[s] + 1e-12)
+        for s in sim_final_freq
+    )
+    return nll           # gp_minimize *minimises* this value
 
-# Optimize the transition parameters using Bayesian Optimization
-optimized_params = bayesian_optimization(create_transition_matrix, initial_state_distribution, observed_state_distribution_3days)
+# ─── search space for each parameter ──────────────────────────
+space = [
+    Real(0.001, 0.1,  name="Δ"),
+    Real(0.01,  0.1,  name="Dr"),
+    Real(0.001, 0.01, name="VD"),
+    Real(0.05,  0.3,  name="d0"),
+    Real(1.0,   10.0, name="VT"),
+    Real(0.01,  0.1,  name="TD"),
+]
 
-# Generate the optimized transition probabilities
-optimized_transition_probabilities = create_transition_matrix(*optimized_params)
+# ─── run Bayesian optimisation (GP + Expected Improvement) ───
+result = gp_minimize(
+    func=objective,
+    dimensions=space,
+    n_calls=80,              # <-- change budget as you like
+    n_initial_points=10,     # purely random warm-up points
+    random_state=42,
+    verbose=True,
+)
+
+best_params = result.x          # list → (Δ, Dr, VD, d0, VT, TD)
+best_nll    = result.fun
+print("\nBest NLL:", best_nll)
+print("Best parameters:", best_params)
+
+# ─── downstream code: keep exactly as before ──────────────────
+optimized_transition_probabilities = create_transition_matrix(*best_params)
 optimized_transition_probabilities = normalize_probabilities(optimized_transition_probabilities)
 
 # Simulate the Markov model with optimized parameters
 simulation_history = simulate_markov_model(optimized_transition_probabilities, initial_state_distribution, 72)
 
 print("Optimized Parameters:")
-print(f"Δ: {optimized_params[0]}")
-print(f"Dr: {optimized_params[1]}")
-print(f"VD: {optimized_params[2]}")
-print(f"d0: {optimized_params[3]}")
-print(f"VT: {optimized_params[4]}")
-print(f"TD: {optimized_params[5]}")
+print(f"Δ: {best_params[0]}")
+print(f"Dr: {best_params[1]}")
+print(f"VD: {best_params[2]}")
+print(f"d0: {best_params[3]}")
+print(f"VT: {best_params[4]}")
+print(f"TD: {best_params[5]}")
 
 # Plot the cell states over time
 time_points = range(len(simulation_history))

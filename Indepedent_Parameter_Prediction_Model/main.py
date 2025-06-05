@@ -10,8 +10,8 @@ def main():
 
     # Collect and compute statistics over simulations
     (mean_probabilities, std_probabilities, iqr_probabilities,
-     mean_ssr, std_ssr, iqr_ssr,
-     mean_final_counts, all_simulation_histories) = collect_and_compute_statistics(num_simulations)
+    mean_ssr, std_ssr, iqr_ssr,
+    mean_final_counts, all_simulation_histories) = collect_and_compute_statistics(num_simulations)
 
     # Print the transition table
     print_transition_table(mean_probabilities, std_probabilities, iqr_probabilities)
